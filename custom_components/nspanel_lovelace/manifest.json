@@ -1,0 +1,14 @@
+{
+  "domain": "nspanel_lovelace",
+  "name": "NSPanel Lovelace Layout Editor",
+  "after_dependencies": ["esphome"],
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "panel_custom", "websocket_api"],
+  "documentation": "https://github.com/santibur06/nspanel-lovelace-editor",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/santibur06/nspanel-lovelace-editor/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
