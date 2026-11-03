@@ -2,7 +2,7 @@
 
 Edit the pages of a Sonoff NSPanel from a sidebar page in Home Assistant, without compiling or flashing firmware.
 
-It works with panels running [esphome-nspanel-lovelace-native](https://github.com/santibur06/esphome-nspanel-lovelace-native). A change takes about 10 seconds to reach the panel, which reboots for a few seconds to apply it.
+It works with panels running [esphome-nspanel-lovelace-native](https://github.com/santibur06/esphome-nspanel-lovelace-native/tree/generic/runtime-layouts) (its `generic/runtime-layouts` branch). A change takes about 10 seconds to reach the panel, which reboots for a few seconds to apply it.
 
 Support for panels running the [AppDaemon backend](https://github.com/joBr99/nspanel-lovelace-ui) is planned, not available yet.
 
