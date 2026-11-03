@@ -279,15 +279,21 @@ async def ws_save(hass, connection, msg) -> None:
     connection.send_result(msg["id"], {})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "nspanel_lovelace/apply"})
+@websocket_api.websocket_command(
+    {vol.Required("type"): "nspanel_lovelace/apply", vol.Optional("device"): str}
+)
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_apply(hass, connection, msg) -> None:
-    """Send the saved changes, one panel at a time because each one reboots and reconnects."""
+    """Send the saved changes, one panel at a time because each one reboots and reconnects.
+
+    With a device, only that panel's changes are sent.
+    """
     data = _data(hass)
     result: dict[str, Any] = {"updated": [], "failed": [], "warnings": []}
     online = data.device_slugs()
-    for device in list(data.unapplied):
+    devices = [d for d in data.unapplied if d == msg["device"]] if "device" in msg else list(data.unapplied)
+    for device in devices:
         layout = data.layouts.get(device)
         payload = to_device_json(layout, data.icons, data.shared) if layout else None
         if payload is None or data.statuses.get(device, {}).get("hash") == fnv1_hash(payload):

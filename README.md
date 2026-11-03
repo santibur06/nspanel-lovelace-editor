@@ -41,7 +41,7 @@ The device also needs "Allow the device to perform Home Assistant actions" turne
 
 ## Using it
 
-Pick a panel, make your changes and press **Save**. **Apply** then sends the saved changes to every panel that has some, and its badge shows how many are waiting. To start from a panel's current pages, paste its `nspanel_lovelace:` YAML into **Import YAML**.
+Pick a panel, make your changes and press **Save**. **Apply** then sends the saved changes to every panel that has some, and its badge shows how many are waiting. **Save & Apply** saves and sends only the panel you're editing. To start from a panel's current pages, paste its `nspanel_lovelace:` YAML into **Import YAML**.
 
 | Screensaver | Settings page | Buttons and relays |
 | --- | --- | --- |

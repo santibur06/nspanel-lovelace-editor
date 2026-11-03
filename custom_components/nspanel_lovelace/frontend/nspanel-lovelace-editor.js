@@ -41,7 +41,7 @@ button { font:inherit; padding:7px 12px; border-radius:6px; border:1px solid var
 button:hover { filter:brightness(1.08); }
 button:disabled { opacity:.5; cursor:default; }
 .badge { display:inline-block; min-width:16px; margin-left:6px; padding:0 4px; box-sizing:border-box; border-radius:8px; background:var(--primary-color); color:var(--text-primary-color, #fff); font-size:11px; line-height:16px; text-align:center; }
-.form-actions { display:flex; justify-content:flex-end; margin-top:20px; }
+.form-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
 button.primary { background:var(--primary-color); border-color:var(--primary-color); color:var(--text-primary-color, #fff); }
 .bar button.primary { background:var(--text-primary-color, #fff); border-color:var(--text-primary-color, #fff); color:var(--primary-color); font-weight:500; }
 button.icon { padding:3px 7px; line-height:1; background:transparent; border-color:transparent; }
@@ -256,6 +256,8 @@ class NSPanelLovelaceEditor extends HTMLElement {
     const pending = this._panels.filter((p) => p.unapplied).length;
     const save = this.shadowRoot.getElementById("form-save");
     if (save) save.textContent = this._dirty ? "Save changes" : "Save";
+    const saveApply = this.shadowRoot.getElementById("form-save-apply");
+    if (saveApply) saveApply.disabled = this._busy;
     let status = "";
     if (info?.status?.error) status = `Panel error: ${info.status.error}`;
     else if (this._dirty) status = "Unsaved changes";
@@ -469,7 +471,8 @@ class NSPanelLovelaceEditor extends HTMLElement {
       return;
     }
     const form = this._sel === "hardware" ? this._formHardware() : this._sel === "screensaver" ? this._formScreensaver() : this._formCard(this._card);
-    el.innerHTML = `${form}<div class="form-actions"><button class="primary" id="form-save" data-action="save">${this._dirty ? "Save changes" : "Save"}</button></div>`;
+    const saveApply = this._allPanels ? "" : `<button id="form-save-apply" data-action="save-apply" ${this._busy ? "disabled" : ""}>Save &amp; Apply</button>`;
+    el.innerHTML = `${form}<div class="form-actions"><button class="primary" id="form-save" data-action="save">${this._dirty ? "Save changes" : "Save"}</button>${saveApply}</div>`;
   }
 
   _screensaverEntity(title, key, withName) {
@@ -905,6 +908,7 @@ class NSPanelLovelaceEditor extends HTMLElement {
       case "modal-import": this._import(); break;
       case "setting-override": this._settingsChange("set_setting_override", { device: this._device, key: el.dataset.key, override: !!el.dataset.override }); break;
       case "save": this._save(); break;
+      case "save-apply": this._saveAndApply(); break;
       case "apply": this._applyAll(); break;
       case "override": {
         const key = el.dataset.key;
@@ -1156,10 +1160,11 @@ class NSPanelLovelaceEditor extends HTMLElement {
     return out;
   }
 
-  async _save() {
+  async _save(refresh = true) {
     const problems = this._problems();
-    if (problems.length) { this._setMsg("error", problems.join("; ")); return; }
+    if (problems.length) { this._setMsg("error", problems.join("; ")); return false; }
     const layout = clone(this._layout);
+    let saved = false;
     try {
       if (this._allPanels) {
         const { changed } = await this._ws("save_shared", { shared: layout });
@@ -1170,22 +1175,33 @@ class NSPanelLovelaceEditor extends HTMLElement {
         this._setMsg("ok", "Saved. Press Apply to send it to the panel.");
       }
       this._saved = JSON.stringify(layout);
+      saved = true;
     } catch (err) {
       this._setMsg("error", err.message);
     }
-    await this._refreshPanels();
+    if (refresh) await this._refreshPanels();
+    return saved;
+  }
+
+  async _saveAndApply() {
+    if (await this._save(false)) await this._apply(this._device);
+    else await this._refreshPanels();
   }
 
   async _applyAll() {
     const count = this._panels.filter((p) => p.unapplied).length;
     const unsaved = this._dirty ? " This panel's unsaved changes won't be included." : "";
     if (!confirm(`Send the saved changes to ${count} ${count === 1 ? "panel" : "panels"}? Each one reboots for a few seconds.${unsaved}`)) return;
+    await this._apply();
+  }
+
+  async _apply(device) {
     this._busy = true;
-    this._setMsg("info", "Sending to the panels, one at a time…");
+    this._setMsg("info", device ? "Sending to the panel…" : "Sending to the panels, one at a time…");
     this._renderBar();
     try {
-      const { updated, failed, warnings } = await this._ws("apply");
-      const done = `${updated.length} ${updated.length === 1 ? "panel" : "panels"} updated.`;
+      const { updated, failed, warnings } = await this._ws("apply", device ? { device } : {});
+      const done = device && !failed.length ? (updated.length ? "Saved and sent to the panel." : "Saved. The panel already had these changes.") : `${updated.length} ${updated.length === 1 ? "panel" : "panels"} updated.`;
       const name = (device) => this._panels.find((p) => p.device === device)?.name || device;
       if (failed.length) this._setMsg("error", `${done} Not applied: ${failed.map((f) => `${name(f.device)} (${f.error})`).join(", ")}`);
       else if (warnings.length) this._setMsg("error", `${done} ${warnings.join(" ")}`);
