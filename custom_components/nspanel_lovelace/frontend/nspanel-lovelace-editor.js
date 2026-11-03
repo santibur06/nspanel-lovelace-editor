@@ -14,6 +14,12 @@ const CARD_TYPES = {
 const CARD_ENTITY_KEY = { cardThermo: "thermo_entity_id", cardAlarm: "alarm_entity_id", cardMedia: "media_entity_id" };
 const CARD_ENTITY_DOMAIN = { cardThermo: "climate.", cardAlarm: "alarm_control_panel.", cardMedia: "media_player." };
 const ALARM_MODES = ["arm_home", "arm_away", "arm_night", "arm_vacation", "arm_custom_bypass"];
+const ALL_PANELS = "__all__";
+const LEAVE_QUESTION = "This panel has unsaved changes. Leave and lose them?";
+const ACCESS_LABELS = { open: "Show, no PIN", pin: "Show, require the PIN", hidden: "Hide" };
+const LOCK_DISPLAY_LABELS = { keypad: "Always show the keypad", screensaver: "Show the screensaver, a tap asks for the PIN" };
+const SHARED_TOP_KEYS = ["sleep_timeout", "brightness"];
+const SHARED_SCREENSAVER_KEYS = ["date_format", "time_format", "weather", "double_tap_to_unlock", "extra_entity"];
 const DEFAULT_ICON = { light: "lightbulb", switch: "toggle-switch", cover: "window-shutter", fan: "fan", climate: "thermostat", sensor: "gauge", binary_sensor: "checkbox-marked-circle", scene: "palette", script: "script-text", lock: "lock", media_player: "speaker", navigate: "arrow-right-bold-circle" };
 
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -34,6 +40,8 @@ const STYLES = `
 button { font:inherit; padding:7px 12px; border-radius:6px; border:1px solid var(--divider-color); background:var(--card-background-color); color:var(--primary-text-color); cursor:pointer; }
 button:hover { filter:brightness(1.08); }
 button:disabled { opacity:.5; cursor:default; }
+.badge { display:inline-block; min-width:16px; margin-left:6px; padding:0 4px; box-sizing:border-box; border-radius:8px; background:var(--primary-color); color:var(--text-primary-color, #fff); font-size:11px; line-height:16px; text-align:center; }
+.form-actions { display:flex; justify-content:flex-end; margin-top:20px; }
 button.primary { background:var(--primary-color); border-color:var(--primary-color); color:var(--text-primary-color, #fff); }
 .bar button.primary { background:var(--text-primary-color, #fff); border-color:var(--text-primary-color, #fff); color:var(--primary-color); font-weight:500; }
 button.icon { padding:3px 7px; line-height:1; background:transparent; border-color:transparent; }
@@ -47,6 +55,7 @@ label.check { display:inline-flex; align-items:center; gap:6px; margin:0 12px 10
 @media (max-width:1000px) { .main { grid-template-columns:1fr; } .preview-col { order:-1; } }
 .box { background:var(--card-background-color); border:1px solid var(--divider-color); border-radius:10px; padding:12px; }
 .box h2 { font-size:14px; font-weight:500; margin:0 0 10px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.pages .pages-head { margin-top:14px; }
 .pages .page { display:flex; align-items:center; gap:6px; padding:6px 8px; border-radius:6px; cursor:pointer; }
 .pages .page:hover { background:var(--secondary-background-color); }
 .pages .page.sel { background:var(--primary-color); color:var(--text-primary-color,#fff); }
@@ -70,6 +79,9 @@ label.check { display:inline-flex; align-items:center; gap:6px; margin:0 12px 10
 .results div:hover { background:var(--secondary-background-color); }
 .results small { color:var(--secondary-text-color); margin-left:auto; }
 .preview-col { position:sticky; top:8px; }
+#pages { position:sticky; top:8px; z-index:5; max-height:calc(100vh - 16px); overflow:auto; box-sizing:border-box; }
+@media (max-width:1000px) { #pages { top:0; max-height:40vh; } }
+@media (max-width:1000px) { .preview-col { position:static; } }
 .screen { width:320px; height:480px; margin:0 auto; background:#000; color:#fff; border:8px solid #222; border-radius:10px; box-sizing:content-box; overflow:hidden; position:relative; user-select:none; }
 .screen ha-icon { --mdc-icon-size:48px; color:#4a7dff; }
 .s-head { display:flex; align-items:center; justify-content:space-between; height:56px; padding:0 14px; }
@@ -79,7 +91,7 @@ label.check { display:inline-flex; align-items:center; gap:6px; margin:0 12px 10
 .s-grid.g8 { grid-template-rows:repeat(4,88px); }
 .s-grid.g6 { grid-template-rows:repeat(3,120px); }
 .s-cell { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; text-align:center; font-size:13px; cursor:default; overflow:hidden; }
-.s-cell.nav { cursor:pointer; }
+.s-cell.nav, .s-row.nav, .s-head ha-icon[data-action] { cursor:pointer; }
 .s-rows { padding:4px 12px; }
 .s-row { display:flex; align-items:center; gap:10px; height:64px; font-size:14px; }
 .s-row ha-icon { --mdc-icon-size:30px; }
@@ -104,6 +116,8 @@ class NSPanelLovelaceEditor extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._panels = [];
     this._device = null;
+    this._shared = {};
+    this._previewTrail = [];
     this._layout = null;
     this._saved = null;
     this._sel = "screensaver";
@@ -139,6 +153,32 @@ class NSPanelLovelaceEditor extends HTMLElement {
 
   _ws(type, data = {}) { return this._hass.callWS({ type: `nspanel_lovelace/${type}`, ...data }); }
 
+  connectedCallback() {
+    window.addEventListener("beforeunload", this._warnBeforeUnload);
+    // Home Assistant's own links change the page without unloading it
+    window.addEventListener("click", this._warnBeforeLink, true);
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("beforeunload", this._warnBeforeUnload);
+    window.removeEventListener("click", this._warnBeforeLink, true);
+  }
+
+  _warnBeforeUnload = (ev) => {
+    if (!this._dirty) return;
+    ev.preventDefault();
+    ev.returnValue = "";
+  };
+
+  _warnBeforeLink = (ev) => {
+    if (!this._dirty) return;
+    const link = ev.composedPath().find((el) => typeof el.href === "string" && el.href);
+    if (!link || new URL(link.href, location.href).pathname === location.pathname) return;
+    if (confirm(LEAVE_QUESTION)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  };
+
   async _loadPanels() {
     try {
       this._panels = await this._ws("panels");
@@ -158,13 +198,24 @@ class NSPanelLovelaceEditor extends HTMLElement {
 
   async _selectDevice(device) {
     this._device = device;
+    this._previewTrail = [];
+    this._screensaverKept = null;
+    this._shared = await this._ws("get_shared");
+    if (this._allPanels) {
+      this._layout = { ...clone(this._shared), screensaver: { ...this._shared.screensaver }, cards: [] };
+      this._saved = JSON.stringify(this._layout);
+      this._sel = "screensaver";
+      this._render();
+      return;
+    }
     const stored = await this._ws("get", { device });
     this._layout = stored || { sleep_timeout: 10, screensaver: { date_format: "%A, %-d %b %Y", time_format: "%H:%M" }, cards: [{ id: "page_1", type: "cardGrid", title: "Home", entities: [] }] };
-    this._saved = stored ? JSON.stringify(stored) : null;
+    this._saved = JSON.stringify(this._layout);
     this._sel = "screensaver";
     this._render();
   }
 
+  get _allPanels() { return this._device === ALL_PANELS; }
   get _info() { return this._panels.find((p) => p.device === this._device); }
   get _model() { return this._info?.status?.model || "us-p"; }
   get _dirty() { return this._layout && JSON.stringify(this._layout) !== this._saved; }
@@ -202,19 +253,24 @@ class NSPanelLovelaceEditor extends HTMLElement {
     const bar = this.shadowRoot.getElementById("bar");
     if (!bar) return;
     const info = this._info;
+    const pending = this._panels.filter((p) => p.unapplied).length;
+    const save = this.shadowRoot.getElementById("form-save");
+    if (save) save.textContent = this._dirty ? "Save changes" : "Save";
     let status = "";
     if (info?.status?.error) status = `Panel error: ${info.status.error}`;
     else if (this._dirty) status = "Unsaved changes";
+    else if (info?.unapplied) status = "Saved, not applied yet";
     else if (info?.in_sync) status = "Panel is up to date";
-    else if (info?.has_layout && info?.in_sync === false) status = "Saved, not on the panel yet";
     else if (info?.status?.source === "config") status = "Panel uses the pages in its YAML";
+    else if (info?.has_layout && info?.in_sync === false) status = "Saved, not on the panel yet";
     bar.innerHTML = `${this._narrow ? '<ha-menu-button></ha-menu-button>' : ""}<h1>NSPanel</h1>
-      <select data-action="device" aria-label="Panel">${this._panels.map((p) => `<option value="${esc(p.device)}" ${p.device === this._device ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
+      <select data-action="device" aria-label="Panel"><option value="${ALL_PANELS}" ${this._allPanels ? "selected" : ""}>All panels</option>${this._panels.map((p) => `<option value="${esc(p.device)}" ${p.device === this._device ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
       <span>${esc(status)}</span><span class="spacer"></span>
-      <button data-action="import">Import YAML</button>
+      <button data-action="pin-open" ${this._panels.length ? "" : "disabled"}>Panels PIN</button>
+      ${this._allPanels ? "" : `<button data-action="import">Import YAML</button>
       <button data-action="export" ${this._layout ? "" : "disabled"}>Export YAML</button>
-      <button data-action="reset" ${this._device ? "" : "disabled"}>Use YAML pages</button>
-      <button class="primary" data-action="apply" ${this._layout && !this._busy ? "" : "disabled"}>${this._busy ? "Applying…" : "Save &amp; Apply"}</button>`;
+      <button data-action="reset" ${this._device ? "" : "disabled"}>Use YAML pages</button>`}
+      <button class="primary" data-action="apply" ${pending && !this._busy ? "" : "disabled"}>${this._busy ? "Applying…" : "Apply"}${pending && !this._busy ? `<span class="badge" title="NSPanels with saved changes to apply">${pending}</span>` : ""}</button>`;
     const menu = bar.querySelector("ha-menu-button");
     if (menu) { menu.hass = this._hass; menu.narrow = this._narrow; }
   }
@@ -270,6 +326,10 @@ class NSPanelLovelaceEditor extends HTMLElement {
   _renderPages() {
     const el = this.shadowRoot.getElementById("pages");
     if (!el) return;
+    if (this._allPanels) {
+      el.innerHTML = '<h2>All panels</h2><p class="note">Values set here replace each panel\'s own, unless that panel overrides them. Leave one empty and each panel keeps its own.</p>';
+      return;
+    }
     const rows = this._pageTree().map(({ index, depth }) => {
       const card = this._layout.cards[index];
       const top = !card.hidden;
@@ -280,15 +340,18 @@ class NSPanelLovelaceEditor extends HTMLElement {
         ${top ? `<button class="icon" data-action="page-up" data-index="${index}" title="Move up" aria-label="Move up">↑</button>` : ""}
       </div>`;
     }).join("");
-    el.innerHTML = `<h2>Pages <button data-action="add-page">Add page</button></h2>
-      <div class="page ${this._sel === "screensaver" ? "sel" : ""}" data-action="select" data-index="screensaver"><span class="name">Screensaver</span></div>${rows}
+    el.innerHTML = `<div class="page ${this._sel === "hardware" ? "sel" : ""}" data-action="select" data-index="hardware"><span class="name">Buttons and relays</span></div>
+      <h2 class="pages-head">Pages <button data-action="add-page">Add page</button></h2>
+      <div class="page ${this._sel === "screensaver" ? "sel" : ""}" data-action="select" data-index="screensaver"><span class="name">Screensaver</span></div>
+      <div class="page ${this._sel === "settings" ? "sel" : ""}" data-action="select" data-index="settings"><span class="name">Settings page</span></div>${rows}
       <p class="note">Pages with arrows swipe in order. Sub-pages open from a button on another page.</p>`;
   }
 
   _renderPreview() {
     const el = this.shadowRoot.getElementById("screen");
     if (!el) return;
-    if (this._sel === "screensaver") el.innerHTML = this._previewScreensaver();
+    if (this._sel === "settings") el.innerHTML = this._previewSettings();
+    else if (typeof this._sel !== "number") el.innerHTML = this._previewScreensaver();
     else el.innerHTML = this._previewCard(this._card);
   }
 
@@ -304,7 +367,7 @@ class NSPanelLovelaceEditor extends HTMLElement {
   }
 
   _previewScreensaver() {
-    const s = this._layout.screensaver;
+    const s = this._merged().screensaver;
     if (!s) return `<div class="s-center">Screensaver off. The first page stays on.</div>`;
     const value = (item) => {
       const st = this._stateOf(item.entity_id);
@@ -324,11 +387,27 @@ class NSPanelLovelaceEditor extends HTMLElement {
       <div class="s-main">${main}</div><div class="s-fc">${fc}</div>`;
   }
 
+  _previewSettings() {
+    const status = this._info?.status;
+    const row = (icon, name, value) => `<div class="s-row"><ha-icon icon="mdi:${icon}"></ha-icon><span class="n">${name}</span><span class="v">${value}</span></div>`;
+    return `<div class="s-head"><ha-icon icon="mdi:home" data-action="preview-home"></ha-icon><span class="t">Ajustes</span><ha-icon icon="mdi:restart"></ha-icon></div>
+      <div class="s-rows">
+        ${row("gesture-tap-button", "Bloquear botones", status?.buttons_locked === "1" ? "on" : "off")}
+        ${row("brightness-6", "Brillo", "")}
+        ${row("brightness-4", "Brillo en reposo", "")}
+        ${this._layout.screensaver ? row("monitor-off", "Apagar pantalla", "") : ""}
+        ${status?.pin_set === "1" ? row("lock", "Bloquear pantalla", "") : ""}
+      </div>`;
+  }
+
   _previewCard(card) {
     const left = card.hidden ? "arrow-up-bold" : "arrow-left-bold";
-    const showArrows = card.hidden || this._layout.cards.filter((c) => !c.hidden).length > 1;
-    const head = `<div class="s-head">${showArrows ? `<ha-icon icon="mdi:${left}"></ha-icon>` : "<span></span>"}
-      <span class="t">${esc(card.title || "")}</span>${showArrows && !card.hidden ? '<ha-icon icon="mdi:arrow-right-bold"></ha-icon>' : "<span></span>"}</div>`;
+    const visible = this._layout.cards.filter((c) => !c.hidden);
+    const gear = visible.length === 1 && !card.hidden && this._info?.status?.settings_access !== "hidden";
+    const showArrows = card.hidden || visible.length > 1;
+    const leftAction = card.hidden ? 'data-action="preview-back"' : 'data-action="preview-step" data-step="-1"';
+    const head = `<div class="s-head">${showArrows ? `<ha-icon icon="mdi:${left}" ${leftAction}></ha-icon>` : "<span></span>"}
+      <span class="t">${esc(card.title || "")}</span>${gear ? '<ha-icon icon="mdi:cog" data-action="preview-settings"></ha-icon>' : showArrows && !card.hidden ? '<ha-icon icon="mdi:arrow-right-bold" data-action="preview-step" data-step="1"></ha-icon>' : "<span></span>"}</div>`;
     const entities = card.entities || [];
     if (card.type === "cardGrid" || card.type === "cardGrid2" || card.type === "cardMedia") {
       const size = card.type === "cardGrid2" ? "g8" : "g6";
@@ -348,7 +427,8 @@ class NSPanelLovelaceEditor extends HTMLElement {
         let v = st?.state ?? "";
         if (domain === "cover") v = "▲ ■ ▼";
         else if (domain === "navigate") v = "›";
-        return `<div class="s-row">${this._iconOf(item)}<span class="n">${esc(this._nameOf(item))}</span><span class="v">${esc(v)}</span></div>`;
+        const nav = domain === "navigate" ? `data-action="open-page" data-id="${esc(item.entity_id.slice(9))}"` : "";
+        return `<div class="s-row ${nav ? "nav" : ""}" ${nav}>${this._iconOf(item)}<span class="n">${esc(this._nameOf(item))}</span><span class="v">${esc(v)}</span></div>`;
       }).join("");
       return `${head}<div class="s-rows">${rows}</div>`;
     }
@@ -373,34 +453,137 @@ class NSPanelLovelaceEditor extends HTMLElement {
     return `<label class="field"><span>${esc(label)}</span><input data-path="${esc(path)}" value="${esc(value ?? "")}" ${attrs}></label>`;
   }
 
+  _showCard(index) {
+    if (index < 0) return;
+    this._sel = index;
+    this._renderPages();
+    this._renderForm();
+    this._renderPreview();
+  }
+
   _renderForm() {
     const el = this.shadowRoot.getElementById("form");
     if (!el) return;
-    el.innerHTML = this._sel === "screensaver" ? this._formScreensaver() : this._formCard(this._card);
+    if (this._sel === "settings") {
+      el.innerHTML = this._formSettings();
+      return;
+    }
+    const form = this._sel === "hardware" ? this._formHardware() : this._sel === "screensaver" ? this._formScreensaver() : this._formCard(this._card);
+    el.innerHTML = `${form}<div class="form-actions"><button class="primary" id="form-save" data-action="save">${this._dirty ? "Save changes" : "Save"}</button></div>`;
   }
 
   _screensaverEntity(title, key, withName) {
-    const item = this._layout.screensaver?.[key] || {};
-    return `<div class="item"><div class="item-head"><strong>${esc(title)}</strong></div>
-      <label class="field"><span>Entity</span>${this._picker("entity", `screensaver.${key}.entity_id`, item.entity_id, "", "None")}</label>
+    const item = this._layout.screensaver?.[key];
+    // The panel only shows these two along with a weather forecast
+    const blocked = !withName ? false : !this._merged().screensaver?.weather;
+    const head = `<label class="check"><input type="checkbox" data-action="screensaver-option" data-key="${key}" ${item ? "checked" : ""} ${blocked && !item ? "disabled" : ""}> <strong>${esc(title)}</strong></label>`;
+    if (!item) return `<div class="item">${head}${blocked ? '<p class="note">Needs the weather forecast.</p>' : ""}</div>`;
+    return `<div class="item">${head}${blocked ? '<p class="note">The panel won\'t show this without the weather forecast.</p>' : ""}
+      <label class="field"><span>Entity</span>${this._picker("entity", `screensaver.${key}.entity_id`, item.entity_id, "", "Search")}</label>
       <div class="two">${withName ? this._textField("Name", `screensaver.${key}.name`, item.name) : ""}
       <label class="field"><span>Icon</span>${this._picker("icon", `screensaver.${key}.icon`, item.icon, "", "Default")}</label></div></div>`;
   }
 
+  _formBrightness() {
+    const b = this._layout.brightness;
+    const mode = b?.mode || "manual";
+    const option = (value, label) => `<option value="${value}" ${mode === value ? "selected" : ""}>${label}</option>`;
+    let html = `<div class="item"><div class="item-head"><strong>Screen brightness</strong></div>
+      <label class="field"><span>Set by</span><select data-action="brightness-mode">
+        ${option("manual", "The panel's sliders or the screen lights")}${option("schedule", "Time of day")}${option("entity", "A Home Assistant entity")}</select></label>`;
+    if (mode === "schedule") {
+      html += (b.schedule || []).map((step, n) => `<div class="two">
+        ${this._textField("From", `brightness.schedule.${n}.time`, step.time, 'type="time"')}
+        ${this._textField("Normal % (5 to 100)", `brightness.schedule.${n}.active`, step.active, 'type="number" min="5" max="100" data-type="int"')}
+        ${this._textField("Standby % (0 to 100)", `brightness.schedule.${n}.inactive`, step.inactive, 'type="number" min="0" max="100" data-type="int"')}
+        <button class="icon danger" data-action="brightness-remove" data-n="${n}" title="Remove" aria-label="Remove" ${b.schedule.length > 1 ? "" : "disabled"}>✕</button></div>`).join("");
+      if ((b.schedule || []).length < 8) html += '<button data-action="brightness-add">Add a time</button>';
+    } else if (mode === "entity") {
+      html += `<label class="field"><span>Entity with a numeric value</span>${this._picker("entity", "brightness.entity_id", b.entity_id, "", "Search")}</label>
+        <div class="two">${this._textField("Value for the lowest brightness", "brightness.from", b.from, 'type="number" step="any" data-type="float"')}
+        ${this._textField("Value for the highest brightness", "brightness.to", b.to, 'type="number" step="any" data-type="float"')}</div>
+        <div class="two">${this._textField("Standby % at the lowest value (optional)", "brightness.inactive_low", b.inactive_low, 'type="number" min="0" max="100" data-type="int"')}
+        ${this._textField("Standby % at the highest value (optional)", "brightness.inactive_high", b.inactive_high, 'type="number" min="0" max="100" data-type="int"')}</div>`;
+    }
+    html += '<p class="note">Normal is the page you tap to. Standby is what shows after the page timeout: the screensaver, or the clock with double tap on, where one tap brings the screensaver back at the normal brightness.</p>';
+    if (mode !== "manual") html += '<p class="note">The rule runs on the panel. The sliders and the screen lights still work until the rule next changes the brightness. Sent with Apply.</p>';
+    return `${html}</div>`;
+  }
+
+  _formHardwareSide(side, title) {
+    const button = this._layout.buttons?.[side] || {};
+    const action = button.action || side;
+    const relay = this._layout.relays?.[side] || "";
+    const option = (current, value, label) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
+    return `<div class="item"><div class="item-head"><strong>${esc(title)}</strong></div>
+      <label class="field"><span>The button</span><select data-action="button-action" data-side="${side}">
+        ${option(action, "left", "Toggles the left relay")}${option(action, "right", "Toggles the right relay")}
+        ${option(action, "entity", "Commands a Home Assistant entity")}${option(action, "none", "Does nothing on its own")}</select></label>
+      ${action === "entity" ? `<label class="field"><span>Entity</span>${this._picker("entity", `buttons.${side}.entity_id`, button.entity_id, "", "Search")}</label>` : ""}
+      <label class="check"><input type="checkbox" data-path="buttons.${side}.expose" ${button.expose ? "checked" : ""}> Show the button in Home Assistant, for automations</label>
+      <label class="field"><span>The relay in Home Assistant</span><select data-action="relay-expose" data-side="${side}">
+        ${option(relay, "", "Leave as it is")}${option(relay, "light", "Light")}${option(relay, "switch", "Switch")}${option(relay, "hidden", "Hidden")}</select></label></div>`;
+  }
+
+  _formHardware() {
+    return `<h2>Buttons and relays</h2>
+      ${this._formHardwareSide("left", "Left")}${this._formHardwareSide("right", "Right")}
+      <p class="note">Entity commands need Home Assistant, so that button does nothing while it is offline. The relay's light and switch are separate entities with their own IDs, so check anything that uses the one you turn off. Hidden disables them in Home Assistant. Applied with Save &amp; apply, and Home Assistant can take about 30 seconds to show a change.</p>`;
+  }
+
   _formScreensaver() {
     const s = this._layout.screensaver;
-    let html = `<h2>Screensaver</h2><label class="check"><input type="checkbox" data-action="toggle-screensaver" ${s ? "checked" : ""}> Use a screensaver</label>`;
-    html += this._textField("Seconds until the screensaver (0 to 65)", "sleep_timeout", this._layout.sleep_timeout, 'type="number" min="0" max="65" data-type="int"');
+    const all = this._allPanels;
+    let html = all ? "<h2>Screensaver for all panels</h2>" : `<h2>Screensaver</h2><label class="check"><input type="checkbox" data-action="toggle-screensaver" ${s ? "checked" : ""}> Use a screensaver</label>`;
+    html += this._sharedField("sleep_timeout", () => this._textField("Seconds until the screensaver (0 to 65)", "sleep_timeout", this._layout.sleep_timeout, 'type="number" min="0" max="65" data-type="int"'), "Seconds until the screensaver");
+    html += this._sharedField("brightness", () => this._formBrightness(), "Screen brightness");
     if (!s) return html;
-    html += `<div class="two">${this._textField("Date format", "screensaver.date_format", s.date_format, 'maxlength="32"')}${this._textField("Time format", "screensaver.time_format", s.time_format, 'maxlength="32"')}</div>
-      <label class="field"><span>Weather forecast</span>${this._picker("entity", "screensaver.weather.entity_id", s.weather?.entity_id, "weather.", "None")}</label>
-      <label class="check"><input type="checkbox" data-path="screensaver.double_tap_to_unlock" ${s.double_tap_to_unlock ? "checked" : ""}> Double tap to wake</label>
-      ${this._screensaverEntity("Main value", "main_entity", true)}
-      ${this._screensaverEntity("Second value", "extra_entity", true)}
-      ${this._screensaverEntity("Top left icon", "status_icon_left", false)}
-      ${this._screensaverEntity("Top right icon", "status_icon_right", false)}
-      <p class="note">The forecast and the second value share space: with a second value, the screen shows three forecast days instead of four.</p>`;
+    html += this._sharedField("date_format", () => this._textField("Date format", "screensaver.date_format", s.date_format, 'maxlength="32"'), "Date format");
+    html += this._sharedField("time_format", () => this._textField("Time format", "screensaver.time_format", s.time_format, 'maxlength="32"'), "Time format");
+    html += this._sharedField("weather", () => `<div class="item"><label class="check"><input type="checkbox" data-action="screensaver-option" data-key="weather" ${s.weather ? "checked" : ""}> <strong>Weather forecast</strong></label>
+      ${s.weather ? `<label class="field"><span>Entity</span>${this._picker("entity", "screensaver.weather.entity_id", s.weather.entity_id, "weather.", "Search")}</label>` : ""}</div>`, "Weather forecast");
+    html += this._sharedField("double_tap_to_unlock", () => `<label class="check"><input type="checkbox" data-path="screensaver.double_tap_to_unlock" ${s.double_tap_to_unlock ? "checked" : ""}> Double tap to wake</label>`, "Double tap to wake");
+    if (!all) html += this._screensaverEntity("Main value", "main_entity", true);
+    html += this._sharedField("extra_entity", () => this._screensaverEntity("Second value", "extra_entity", true), "Second value");
+    if (!all) {
+      html += `${this._screensaverEntity("Top left icon", "status_icon_left", false)}
+        ${this._screensaverEntity("Top right icon", "status_icon_right", false)}`;
+    }
+    html += '<p class="note">The forecast and the second value share space: with a second value, the screen shows three forecast days instead of four.</p>';
     return html;
+  }
+
+  /* ---------- values for all panels ---------- */
+
+  _sharedValue(key) {
+    return SHARED_TOP_KEYS.includes(key) ? this._shared[key] : this._shared.screensaver?.[key];
+  }
+
+  _inherits(key) {
+    return !this._allPanels && this._sharedValue(key) !== undefined && !this._layout.overrides?.includes(key);
+  }
+
+  // A field that follows All panels shows that value, and one that overrides it says so
+  _sharedField(key, field, title) {
+    if (this._allPanels || this._sharedValue(key) === undefined) return field();
+    if (this._inherits(key)) {
+      const value = this._sharedValue(key);
+      const text = value === true ? "On" : value.mode ? { schedule: "Time of day", entity: "A Home Assistant entity" }[value.mode] || "The panel's sliders" : value.entity_id || value;
+      return `<div class="item"><strong>${esc(title)}</strong>: ${esc(text)}
+        <p class="note">From All panels. <button data-action="override" data-key="${key}">Override on this panel</button></p></div>`;
+    }
+    return `${field()}<p class="note">Overrides All panels. <button data-action="use-shared" data-key="${key}">Use the All panels value</button></p>`;
+  }
+
+  // What the panel really shows. The integration does the same before sending a layout.
+  _merged() {
+    const merged = clone(this._layout);
+    if (this._allPanels) return merged;
+    for (const key of SHARED_TOP_KEYS) if (this._inherits(key)) merged[key] = clone(this._sharedValue(key));
+    if (merged.screensaver) {
+      for (const key of SHARED_SCREENSAVER_KEYS) if (this._inherits(key)) merged.screensaver[key] = clone(this._sharedValue(key));
+    }
+    return merged;
   }
 
   _formCard(card) {
@@ -472,6 +655,7 @@ class NSPanelLovelaceEditor extends HTMLElement {
     const el = this.shadowRoot.getElementById("modal");
     if (!el) return;
     if (!this._modal) { el.innerHTML = ""; return; }
+    if (this._modal.kind === "pin") { el.innerHTML = this._modalPin(); return; }
     const importing = this._modal.kind === "import";
     el.innerHTML = `<div class="modal"><div class="box">
       <h2>${importing ? "Import YAML" : "Export YAML"}</h2>
@@ -479,6 +663,104 @@ class NSPanelLovelaceEditor extends HTMLElement {
       <textarea id="yaml" ${importing ? "" : "readonly"}>${esc(this._modal.text || "")}</textarea>
       <div class="actions"><button data-action="modal-close">Close</button>${importing ? '<button class="primary" data-action="modal-import">Import</button>' : ""}</div>
     </div></div>`;
+  }
+
+  _modalPin() {
+    const panelHasPin = this._panels.some((p) => p.status?.pin_set === "1");
+    const shared = this._panels[0]?.shared_settings || {};
+    const select = (key, label, options) => `<label class="field"><span>${label}</span><select data-action="shared-setting" data-key="${key}">
+      <option value="">Each panel chooses</option>
+      ${Object.entries(options).map(([value, text]) => `<option value="${value}" ${shared[key] === value ? "selected" : ""}>${text}</option>`).join("")}</select></label>`;
+    return `<div class="modal"><div class="box"><h2>Panels PIN</h2>
+      <p class="note">${this._panels[0]?.shared_pin ? "A PIN is set." : "No PIN is set."} Every panel uses the same PIN, including new ones. Only a hash of it is kept. Removing it also unlocks a panel whose PIN was forgotten.</p>
+      <label class="field"><span>New PIN (4 to 8 digits)</span><input id="lock-pin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8"></label>
+      <div class="actions" style="justify-content:flex-start">
+        <button data-action="lock-pin-save">Save PIN on all panels</button>
+        <button data-action="lock-pin-remove" ${this._panels[0]?.shared_pin || panelHasPin ? "" : "disabled"}>Remove PIN from all panels</button>
+      </div>
+      <h2>Defaults for all panels</h2>
+      <p class="note">These take effect right away. A panel can override them on its Settings page.</p>
+      ${select("settings_access", "Settings page on the panel", ACCESS_LABELS)}
+      ${select("lock_display", "While the screen is locked", LOCK_DISPLAY_LABELS)}
+      <div class="actions"><button data-action="modal-close">Close</button></div></div></div>`;
+  }
+
+  // Follows the Panels PIN default unless this panel overrides it
+  _settingField(key, title, labels, field) {
+    const info = this._info;
+    const shared = info.shared_settings?.[key];
+    if (!shared) return field();
+    if (!info.setting_overrides?.includes(key)) {
+      return `<div class="item"><strong>${title}</strong>: ${esc(labels[shared])}
+        <p class="note">From Panels PIN. <button data-action="setting-override" data-key="${key}" data-override="1">Override on this panel</button></p></div>`;
+    }
+    return `${field()}<p class="note">Overrides Panels PIN. <button data-action="setting-override" data-key="${key}">Use the Panels PIN value</button></p>`;
+  }
+
+  _formSettings() {
+    const status = this._info?.status;
+    if (status?.pin_set === undefined) {
+      return `<h2>Settings page</h2><p class="note">This panel has not reported its settings. It may be offline or need a firmware update.</p>`;
+    }
+    const pinSet = status.pin_set === "1";
+    const locked = status.locked === "1";
+    const access = pinSet ? status.settings_access : status.settings_access === "hidden" ? "hidden" : "open";
+    const option = (value, disabled) => `<option value="${value}" ${access === value ? "selected" : ""} ${disabled ? "disabled" : ""}>${ACCESS_LABELS[value]}</option>`;
+    return `<h2>Settings page</h2>
+      <p class="note">These apply to this panel only and take effect right away.</p>
+      ${this._settingField("settings_access", "Settings page on the panel", ACCESS_LABELS, () => `<label class="field"><span>Settings page on the panel</span><select data-action="lock-access">
+        ${option("open")}${option("pin", !pinSet)}${option("hidden")}</select></label>`)}
+      <label class="check"><input type="checkbox" data-action="lock-buttons" ${status.buttons_locked === "1" ? "checked" : ""}> Lock the physical buttons</label>
+      ${this._settingField("lock_display", "While the screen is locked", LOCK_DISPLAY_LABELS, () => `<label class="field"><span>While the screen is locked</span><select data-action="lock-display">
+        <option value="keypad" ${status.lock_display !== "screensaver" ? "selected" : ""}>${LOCK_DISPLAY_LABELS.keypad}</option>
+        <option value="screensaver" ${status.lock_display === "screensaver" ? "selected" : ""}>${LOCK_DISPLAY_LABELS.screensaver}</option></select></label>`)}
+      <div class="actions" style="justify-content:flex-start">
+        <button data-action="${locked ? "lock-unlock" : "lock-lock"}" ${pinSet ? "" : "disabled"}>${locked ? "Unlock screen" : "Lock screen"}</button>
+      </div>
+      <p class="note">${!pinSet ? "Set a PIN under Panels PIN to require it here." : locked ? "The screen is locked." : "The screen is not locked."}</p>`;
+  }
+
+  async _settingsChange(call, data) {
+    try {
+      await this._ws(call, data);
+      // The panels answer with status events, which a new request picks up
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await this._refreshPanels();
+    } catch (err) {
+      this._setMsg("error", err.message);
+    }
+    this._renderModal();
+    this._renderForm();
+    this._renderPreview();
+  }
+
+  async _setSharedPin(pin) {
+    try {
+      const { updated, total } = await this._ws("set_shared_pin", { pin });
+      const verb = pin ? "PIN set" : "PIN removed";
+      const rest = updated < total ? ` The other ${total - updated} get it when they next connect.` : "";
+      this._setMsg(updated ? "ok" : "info", `${verb} on ${updated} of ${total} panels.${rest}`);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await this._refreshPanels();
+    } catch (err) {
+      this._setMsg("error", err.message);
+    }
+    this._renderModal();
+    this._renderForm();
+    this._renderPreview();
+  }
+
+  async _lockCommand(action, data = {}) {
+    try {
+      await this._ws("lock", { device: this._device, action, ...data });
+      // The panel answers with a status event, which a new request picks up
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await this._refreshPanels();
+    } catch (err) {
+      this._setMsg("error", err.message);
+    }
+    this._renderForm();
+    this._renderPreview();
   }
 
   /* ---------- changes ---------- */
@@ -509,14 +791,40 @@ class NSPanelLovelaceEditor extends HTMLElement {
     const n = el.dataset.n !== undefined ? parseInt(el.dataset.n, 10) : null;
     switch (action) {
       case "select":
-        this._sel = el.dataset.index === "screensaver" ? "screensaver" : parseInt(el.dataset.index, 10);
+        this._previewTrail = [];
+        this._sel = ["screensaver", "hardware", "settings"].includes(el.dataset.index) ? el.dataset.index : parseInt(el.dataset.index, 10);
         this._renderPages(); this._renderForm(); this._renderPreview();
         break;
       case "open-page": {
         const index = cards.findIndex((c) => c.id === el.dataset.id);
-        if (index >= 0) { this._sel = index; this._renderPages(); this._renderForm(); this._renderPreview(); }
+        if (index >= 0) {
+          this._previewTrail.push(this._card);
+          this._showCard(index);
+        }
         break;
       }
+      case "preview-back": {
+        // Back to the page this one was opened from, or the first page if it was picked from the list
+        const from = cards.indexOf(this._previewTrail.pop());
+        this._showCard(from >= 0 ? from : cards.findIndex((c) => !c.hidden));
+        break;
+      }
+      case "preview-step": {
+        // The panel goes through its settings page between the last page and the first
+        const stops = cards.filter((c) => !c.hidden);
+        if (this._info?.status?.settings_access !== "hidden") stops.push("settings");
+        const target = stops[(stops.indexOf(this._card) + parseInt(el.dataset.step, 10) + stops.length) % stops.length];
+        this._previewTrail = [];
+        this._showCard(target === "settings" ? target : cards.indexOf(target));
+        break;
+      }
+      case "preview-settings":
+        this._previewTrail = [];
+        this._showCard("settings");
+        break;
+      case "preview-home":
+        this._showCard(cards.findIndex((c) => !c.hidden));
+        break;
       case "page-up": {
         const index = parseInt(el.dataset.index, 10);
         const visible = cards.map((c, i) => (c.hidden ? -1 : i)).filter((i) => i >= 0);
@@ -559,11 +867,63 @@ class NSPanelLovelaceEditor extends HTMLElement {
         else delete this._layout.screensaver;
         this._changed({ structure: true });
         break;
+      case "screensaver-option": {
+        // Unticking keeps the values until another panel is opened, in case it was a slip
+        const screensaver = this._layout.screensaver;
+        const key = el.dataset.key;
+        if (el.checked) {
+          screensaver[key] = this._screensaverKept?.[key] || { entity_id: "" };
+        } else {
+          (this._screensaverKept ||= {})[key] = screensaver[key];
+          delete screensaver[key];
+        }
+        this._changed({ structure: true });
+        break;
+      }
+      case "brightness-add":
+        this._layout.brightness.schedule.push({ time: "12:00", active: 100, inactive: 30 });
+        this._changed({ structure: true });
+        break;
+      case "brightness-remove":
+        this._layout.brightness.schedule.splice(n, 1);
+        this._changed({ structure: true });
+        break;
+      case "pin-open": this._modal = { kind: "pin" }; this._renderModal(); this._refreshPanels().then(() => { if (this._modal?.kind === "pin") this._renderModal(); }); break;
+      case "lock-pin-save": {
+        const pin = this.shadowRoot.getElementById("lock-pin").value;
+        if (!/^\d{4,8}$/.test(pin)) { this._setMsg("error", "The PIN needs 4 to 8 digits."); this._modal = null; this._renderModal(); break; }
+        this._setSharedPin(pin);
+        break;
+      }
+      case "lock-pin-remove": this._setSharedPin(""); break;
+      case "lock-lock": this._lockCommand("lock"); break;
+      case "lock-unlock": this._lockCommand("unlock"); break;
+      case "lock-buttons": this._lockCommand("buttons", { locked: el.checked }); break;
       case "import": this._modal = { kind: "import", text: "" }; this._renderModal(); break;
       case "export": this._export(); break;
       case "modal-close": this._modal = null; this._renderModal(); break;
       case "modal-import": this._import(); break;
-      case "apply": this._apply(); break;
+      case "setting-override": this._settingsChange("set_setting_override", { device: this._device, key: el.dataset.key, override: !!el.dataset.override }); break;
+      case "save": this._save(); break;
+      case "apply": this._applyAll(); break;
+      case "override": {
+        const key = el.dataset.key;
+        (this._layout.overrides ||= []).push(key);
+        const value = clone(this._sharedValue(key));
+        if (SHARED_TOP_KEYS.includes(key)) this._layout[key] = value;
+        else this._layout.screensaver[key] = value;
+        this._changed({ structure: true });
+        break;
+      }
+      case "use-shared": {
+        const key = el.dataset.key;
+        this._layout.overrides = this._layout.overrides.filter((k) => k !== key);
+        if (!this._layout.overrides.length) delete this._layout.overrides;
+        if (SHARED_TOP_KEYS.includes(key)) delete this._layout[key];
+        else delete this._layout.screensaver[key];
+        this._changed({ structure: true });
+        break;
+      }
       case "reset": this._reset(); break;
     }
   }
@@ -586,7 +946,41 @@ class NSPanelLovelaceEditor extends HTMLElement {
 
   _change(el) {
     const action = el.dataset.action;
-    if (action === "device") { this._setMsg(); this._selectDevice(el.value); return; }
+    if (action === "device") {
+      if (this._dirty && !confirm(LEAVE_QUESTION)) { el.value = this._device; return; }
+      this._setMsg();
+      this._selectDevice(el.value);
+      return;
+    }
+    if (action === "brightness-mode") {
+      if (el.value === "schedule") this._layout.brightness = { mode: "schedule", schedule: [{ time: "09:00", active: 100, inactive: 30 }, { time: "21:00", active: 100, inactive: 1 }] };
+      else if (el.value === "entity") this._layout.brightness = { mode: "entity", entity_id: "", from: 0, to: 100 };
+      else delete this._layout.brightness;
+      this._changed({ structure: true });
+      return;
+    }
+    if (action === "button-action") {
+      const buttons = this._layout.buttons ||= {};
+      const button = buttons[el.dataset.side] ||= {};
+      delete button.entity_id;
+      if (el.value === el.dataset.side) delete button.action;
+      else button.action = el.value;
+      if (!Object.keys(button).length) delete buttons[el.dataset.side];
+      if (!Object.keys(buttons).length) delete this._layout.buttons;
+      this._changed({ structure: true });
+      return;
+    }
+    if (action === "relay-expose") {
+      const relays = this._layout.relays ||= {};
+      if (el.value) relays[el.dataset.side] = el.value;
+      else delete relays[el.dataset.side];
+      if (!Object.keys(relays).length) delete this._layout.relays;
+      this._changed({ structure: true });
+      return;
+    }
+    if (action === "shared-setting") { this._settingsChange("set_shared_setting", { key: el.dataset.key, value: el.value }); return; }
+    if (action === "lock-display") { this._lockCommand("lock_display", { display: el.value }); return; }
+    if (action === "lock-access") { this._lockCommand("access", { access: el.value }); return; }
     if (action === "card-type") {
       const card = this._card;
       card.type = el.value;
@@ -620,6 +1014,7 @@ class NSPanelLovelaceEditor extends HTMLElement {
   _applyField(el, final) {
     let value = el.type === "checkbox" ? el.checked : el.value;
     if (el.dataset.type === "int") value = value === "" ? "" : parseInt(value, 10);
+    if (el.dataset.type === "float") value = value === "" ? "" : parseFloat(value);
     if (el.dataset.prefix !== undefined && el.tagName === "SELECT") value = el.dataset.prefix + value;
     else if (el.dataset.prefix !== undefined) value = el.dataset.prefix + value;
     const allowEmpty = el.dataset.path.endsWith(".entity_id");
@@ -669,9 +1064,10 @@ class NSPanelLovelaceEditor extends HTMLElement {
         const name = states[id].attributes.friendly_name || "";
         if (!query || id.includes(query) || name.toLowerCase().includes(query)) {
           results.push({ value: id, label: name || id, hint: id });
-          if (results.length >= MAX_RESULTS) break;
         }
       }
+      results.sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
+      results = results.slice(0, MAX_RESULTS);
     }
     if (this.shadowRoot.activeElement !== input) return;
     this._closeResults();
@@ -743,6 +1139,10 @@ class NSPanelLovelaceEditor extends HTMLElement {
 
   _problems() {
     const out = [];
+    const screensaver = this._layout.screensaver || {};
+    for (const [key, title] of [["weather", "Weather forecast"], ["main_entity", "Main value"], ["extra_entity", "Second value"], ["status_icon_left", "Top left icon"], ["status_icon_right", "Top right icon"]]) {
+      if (screensaver[key] && !screensaver[key].entity_id && !this._inherits(key)) out.push(`Screensaver: ${title} is ticked but has no entity`);
+    }
     this._layout.cards.forEach((card, index) => {
       const label = card.title || `page ${index + 1}`;
       const key = CARD_ENTITY_KEY[card.type];
@@ -756,19 +1156,41 @@ class NSPanelLovelaceEditor extends HTMLElement {
     return out;
   }
 
-  async _apply() {
+  async _save() {
     const problems = this._problems();
     if (problems.length) { this._setMsg("error", problems.join("; ")); return; }
-    this._busy = true;
-    this._setMsg("info", "Sending to the panel. It reboots for a few seconds…");
-    this._renderBar();
     const layout = clone(this._layout);
     try {
-      await this._ws("save", { device: this._device, layout, apply: true });
+      if (this._allPanels) {
+        const { changed } = await this._ws("save_shared", { shared: layout });
+        this._shared = await this._ws("get_shared");
+        this._setMsg("ok", `Saved. This changes ${changed} ${changed === 1 ? "panel" : "panels"}. Press Apply to send them.`);
+      } else {
+        await this._ws("save", { device: this._device, layout });
+        this._setMsg("ok", "Saved. Press Apply to send it to the panel.");
+      }
       this._saved = JSON.stringify(layout);
-      this._setMsg("ok", "The panel confirmed this layout.");
     } catch (err) {
-      this._saved = JSON.stringify(layout);
+      this._setMsg("error", err.message);
+    }
+    await this._refreshPanels();
+  }
+
+  async _applyAll() {
+    const count = this._panels.filter((p) => p.unapplied).length;
+    const unsaved = this._dirty ? " This panel's unsaved changes won't be included." : "";
+    if (!confirm(`Send the saved changes to ${count} ${count === 1 ? "panel" : "panels"}? Each one reboots for a few seconds.${unsaved}`)) return;
+    this._busy = true;
+    this._setMsg("info", "Sending to the panels, one at a time…");
+    this._renderBar();
+    try {
+      const { updated, failed, warnings } = await this._ws("apply");
+      const done = `${updated.length} ${updated.length === 1 ? "panel" : "panels"} updated.`;
+      const name = (device) => this._panels.find((p) => p.device === device)?.name || device;
+      if (failed.length) this._setMsg("error", `${done} Not applied: ${failed.map((f) => `${name(f.device)} (${f.error})`).join(", ")}`);
+      else if (warnings.length) this._setMsg("error", `${done} ${warnings.join(" ")}`);
+      else this._setMsg("ok", done);
+    } catch (err) {
       this._setMsg("error", err.message);
     }
     this._busy = false;
@@ -802,13 +1224,17 @@ class NSPanelLovelaceEditor extends HTMLElement {
   async _import() {
     const text = this.shadowRoot.getElementById("yaml").value;
     try {
+      // YAML has none of these, so importing keeps the current ones
+      const kept = {};
+      for (const key of ["brightness", "buttons", "relays", "overrides"]) if (this._layout?.[key]) kept[key] = this._layout[key];
       this._layout = await this._ws("import_yaml", { yaml: text });
+      Object.assign(this._layout, kept);
       this._sel = "screensaver";
       this._modal = null;
       this._renderModal();
       this._renderBody();
       this._renderBar();
-      this._setMsg("info", "Imported. Review it, then press Save & Apply.");
+      this._setMsg("info", "Imported. Review it, then press Save.");
     } catch (err) {
       this._setMsg("error", err.message);
     }

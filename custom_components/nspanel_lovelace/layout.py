@@ -40,6 +40,21 @@ def fnv1_hash(value: str) -> str:
     return f"{result:08x}"
 
 
+def pin_hash(pin: str) -> str:
+    """Same hash as the panel: an empty PIN gives PIN_REMOVED, and a PIN never does."""
+    if not pin:
+        return "00000000"
+    value = fnv1_hash(f"nspanel-pin:{pin}")
+    return value if value != "00000000" else "00000001"
+
+
+RUNTIME_ONLY_KEYS = ("brightness", "buttons", "relays", "overrides")
+
+# What the All panels page can set. A panel lists the ones it keeps its own value for in "overrides"
+SHARED_TOP_KEYS = ("sleep_timeout", "brightness")
+SHARED_SCREENSAVER_KEYS = ("date_format", "time_format", "weather", "double_tap_to_unlock", "extra_entity")
+
+
 def _is_hex_icon(value: str) -> bool:
     return len(value) == 4 and all(char in "0123456789abcdefABCDEF" for char in value)
 
@@ -55,9 +70,44 @@ def _device_icon(item: dict[str, Any], icons: dict[str, str]) -> None:
         raise ValueError(f"Unknown icon '{icon}'")
 
 
-def to_device_json(layout: dict[str, Any], icons: dict[str, str]) -> str:
-    """Build the document sent to the panel, which only knows glyph values."""
+def clean_shared(shared: dict[str, Any]) -> dict[str, Any]:
+    """Keep what the All panels page can set. A value left empty means each panel keeps its own."""
+    result: dict[str, Any] = {key: shared[key] for key in SHARED_TOP_KEYS if shared.get(key) not in (None, "")}
+    screensaver = {}
+    for key in SHARED_SCREENSAVER_KEYS:
+        value = (shared.get("screensaver") or {}).get(key)
+        if value and (not isinstance(value, dict) or value.get("entity_id")):
+            screensaver[key] = value
+    if screensaver:
+        result["screensaver"] = screensaver
+    return result
+
+
+def effective_layout(layout: dict[str, Any], shared: dict[str, Any] | None) -> dict[str, Any]:
+    """The layout a panel really uses: its own, with the shared values it doesn't override."""
     document = copy.deepcopy(layout)
+    overrides = document.pop("overrides", [])
+    for key, value in (shared or {}).items():
+        if key in SHARED_TOP_KEYS and key not in overrides:
+            document[key] = copy.deepcopy(value)
+    # A panel with its screensaver off stays that way
+    if document.get("screensaver") is not None:
+        for key, value in (shared or {}).get("screensaver", {}).items():
+            if key not in overrides:
+                document["screensaver"][key] = copy.deepcopy(value)
+    return document
+
+
+def to_device_json(layout: dict[str, Any], icons: dict[str, str], shared: dict[str, Any] | None = None) -> str:
+    """Build the document sent to the panel, which only knows glyph values."""
+    document = effective_layout(layout, shared)
+    # how the relays and buttons appear is set in Home Assistant, not on the panel
+    document.pop("relays", None)
+    for button in document.get("buttons", {}).values():
+        button.pop("expose", None)
+    document["buttons"] = {side: button for side, button in document.get("buttons", {}).items() if button}
+    if not document["buttons"]:
+        del document["buttons"]
     screensaver = document.get("screensaver")
     if screensaver:
         for key in _SCREENSAVER_ENTITY_KEYS:
@@ -142,7 +192,9 @@ def layout_from_yaml(text: str) -> dict[str, Any]:
 def layout_to_yaml(layout: dict[str, Any]) -> str:
     """Write a layout in the same shape as the ESPHome configuration."""
     return yaml.safe_dump(
-        {"nspanel_lovelace": layout}, allow_unicode=True, sort_keys=False, width=100
+        # these only exist in runtime layouts
+        {"nspanel_lovelace": {k: v for k, v in layout.items() if k not in RUNTIME_ONLY_KEYS}},
+        allow_unicode=True, sort_keys=False, width=100
     )
 
 
