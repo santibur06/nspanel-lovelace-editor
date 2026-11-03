@@ -4,6 +4,8 @@ Edit the pages of a Sonoff NSPanel from a sidebar page in Home Assistant, withou
 
 It works with panels running [esphome-nspanel-lovelace-native](https://github.com/santibur06/esphome-nspanel-lovelace-native/tree/generic/runtime-layouts) (its `generic/runtime-layouts` branch). A change takes about 10 seconds to reach the panel, which reboots for a few seconds to apply it.
 
+![A page being edited, with its preview](docs/screenshots/grid.png)
+
 Support for panels running the [AppDaemon backend](https://github.com/joBr99/nspanel-lovelace-ui) is planned, not available yet.
 
 ## What you can do
@@ -12,6 +14,9 @@ Support for panels running the [AppDaemon backend](https://github.com/joBr99/nsp
 - Edit buttons and rows: entity, name, icon, or a link to another page
 - Set up the screensaver: date and time format, weather, two values, status icons
 - See an approximate preview of each page as you edit
+- Set values once for **All panels**, such as the screensaver, and let each panel override them
+- Give every panel the same PIN with **Panels PIN**, and choose whether the settings page on the panel needs it or is hidden
+- Choose what each physical button does, and how its relay appears in Home Assistant
 - Import an existing `nspanel_lovelace:` YAML section, or export a layout as YAML
 
 Every layout is checked before it's stored. If a panel rejects one, it keeps its last good layout and the editor shows the reason. Your edits stay in the editor so you can fix them.
@@ -36,7 +41,11 @@ The device also needs "Allow the device to perform Home Assistant actions" turne
 
 ## Using it
 
-Pick a panel, make your changes and press **Save & Apply**. To start from a panel's current pages, paste its `nspanel_lovelace:` YAML into **Import YAML**.
+Pick a panel, make your changes and press **Save**. **Apply** then sends the saved changes to every panel that has some, and its badge shows how many are waiting. To start from a panel's current pages, paste its `nspanel_lovelace:` YAML into **Import YAML**.
+
+| Screensaver | Settings page | Buttons and relays |
+| --- | --- | --- |
+| ![Screensaver settings](docs/screenshots/screensaver.png) | ![Settings page and lock](docs/screenshots/settings.png) | ![Buttons and relays](docs/screenshots/buttons.png) |
 
 **Use YAML pages** removes the layout from the panel, which goes back to the pages in its firmware. The layout stays saved in the editor.
 

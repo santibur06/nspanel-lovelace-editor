@@ -377,26 +377,26 @@ class NSPanelLovelaceEditor extends HTMLElement {
     };
     const slots = [s.main_entity, s.extra_entity].filter((i) => i?.entity_id);
     const main = slots.map((i) => `<div>${this._iconOf(i)}<div>${esc(value(i))}</div></div>`).join("");
-    const days = ["Dom", "Lun", "Mar", "Mié"];
+    const days = ["Sun", "Mon", "Tue", "Wed"];
     // The screen firmware hides the first forecast slot when the second entity is used
     const hasExtra = !!s.extra_entity?.entity_id;
     const fc = s.weather?.entity_id
       ? days.map((d, i) => (hasExtra && i === 0 ? "<div></div>" : `<div><div>${d}</div><ha-icon icon="mdi:weather-partly-cloudy"></ha-icon><div>--°</div></div>`)).join("")
       : "";
-    return `<div class="s-time">12:34</div><div class="s-date">Domingo, 1 Nov 2026</div><div class="s-line"></div>
+    return `<div class="s-time">12:34</div><div class="s-date">Sunday, 1 Nov 2026</div><div class="s-line"></div>
       <div class="s-main">${main}</div><div class="s-fc">${fc}</div>`;
   }
 
   _previewSettings() {
     const status = this._info?.status;
     const row = (icon, name, value) => `<div class="s-row"><ha-icon icon="mdi:${icon}"></ha-icon><span class="n">${name}</span><span class="v">${value}</span></div>`;
-    return `<div class="s-head"><ha-icon icon="mdi:home" data-action="preview-home"></ha-icon><span class="t">Ajustes</span><ha-icon icon="mdi:restart"></ha-icon></div>
+    return `<div class="s-head"><ha-icon icon="mdi:home" data-action="preview-home"></ha-icon><span class="t">Settings</span><ha-icon icon="mdi:information-outline"></ha-icon></div>
       <div class="s-rows">
-        ${row("gesture-tap-button", "Bloquear botones", status?.buttons_locked === "1" ? "on" : "off")}
-        ${row("brightness-6", "Brillo", "")}
-        ${row("brightness-4", "Brillo en reposo", "")}
-        ${this._layout.screensaver ? row("monitor-off", "Apagar pantalla", "") : ""}
-        ${status?.pin_set === "1" ? row("lock", "Bloquear pantalla", "") : ""}
+        ${row("gesture-tap-button", "Lock buttons", status?.buttons_locked === "1" ? "on" : "off")}
+        ${row("brightness-6", "Brightness", "")}
+        ${row("brightness-4", "Screensaver brightness", "")}
+        ${this._layout.screensaver ? row("monitor-off", "Turn screen off", "") : ""}
+        ${status?.pin_set === "1" ? row("lock", "Lock screen", "") : ""}
       </div>`;
   }
 
@@ -528,7 +528,7 @@ class NSPanelLovelaceEditor extends HTMLElement {
   _formHardware() {
     return `<h2>Buttons and relays</h2>
       ${this._formHardwareSide("left", "Left")}${this._formHardwareSide("right", "Right")}
-      <p class="note">Entity commands need Home Assistant, so that button does nothing while it is offline. The relay's light and switch are separate entities with their own IDs, so check anything that uses the one you turn off. Hidden disables them in Home Assistant. Applied with Save &amp; apply, and Home Assistant can take about 30 seconds to show a change.</p>`;
+      <p class="note">Entity commands need Home Assistant, so that button does nothing while it is offline. The relay's light and switch are separate entities with their own IDs, so check anything that uses the one you turn off. Hidden disables them in Home Assistant. Sent to the panel when you save and then apply, and Home Assistant can take about 30 seconds to show a change.</p>`;
   }
 
   _formScreensaver() {
